@@ -4,7 +4,7 @@ from setuptools import setup
 
 setup(
     name='qmonitor_client',
-    version='0.0.3',
+    version='0.0.4',
     description='Python client for qmonitor, based on Prometheus Python Client',
     url='https://github.com/shadow4125/py_qmonitor',
     author='shadow.zhang',
