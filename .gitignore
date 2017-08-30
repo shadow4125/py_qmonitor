@@ -1,0 +1,7 @@
+*.pyc
+pbr-*.egg
+*.egg-info
+.venv
+AUTHORS
+ChangeLog
+dist
