@@ -5,7 +5,7 @@ from __future__ import unicode_literals
 import glob
 import json
 import os
-import shelve
+from qtdigest import Tdigest
 
 from . import core
 
@@ -66,11 +66,17 @@ class MultiProcessCollector(object):
                         # _sum/_count
                         samples.setdefault((name, labels), 0.0)
                         samples[(name, labels)] += value
-                else:
-                    # Counter and Summary.
+                elif metric.type == 'counter':
                     samples.setdefault((name, labels), 0.0)
                     samples[(name, labels)] += value
-
+                else:
+                    # Summary.
+                    if core._isFloat(value):
+                        samples.setdefault((name, labels), 0.0)
+                        samples[(name, labels)] += value
+                    else:
+                        samples.setdefault((name, labels), [])
+                        samples[(name, labels)].extend(value)
 
             # Accumulate bucket values.
             if metric.type == 'histogram':
@@ -81,8 +87,17 @@ class MultiProcessCollector(object):
                         samples[(metric.name + '_bucket', labels + (('le', core._floatToGoString(bucket)), ))] = acc
                     samples[(metric.name + '_count', labels)] = acc
 
+            if metric.type == 'summary':
+                for (name, labels), value in samples.items():
+                    if not core._isFloat(value):
+                        qt = Tdigest()
+                        for val in value:
+                            qt.push(val)
+                        samples[(name, labels)] = qt.serialize()
+
             # Convert to correct sample format.
             metric.samples = [(name, dict(labels), value) for (name, labels), value in samples.items()]
+
         return metrics.values()
 
 

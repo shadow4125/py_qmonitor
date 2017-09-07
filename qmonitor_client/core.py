@@ -312,6 +312,15 @@ class _MutexValue(object):
           return self._value
 
 
+def _isFloat(value):
+    try:
+        float(value)
+        return True
+    except Exception:
+        pass
+    return False
+
+
 class _MmapedDict(object):
     """A dict of doubles, backed by an mmapped file.
 
@@ -339,22 +348,28 @@ class _MmapedDict(object):
             for key, _, pos in self._read_all_values():
                 self._positions[key] = pos
 
-    def _init_value(self, key):
+    def _init_value(self, key, value):
         """Initialize a value. Lock must be held by caller."""
         encoded = key.encode('utf-8')
-        # Pad to be 8-byte aligned.
-        padded = encoded + (b' ' * (8 - (len(encoded) + 4) % 8))
-        value = struct.pack('i{0}sd'.format(len(padded)).encode(), len(encoded), padded, 0.0)
-        while self._used + len(value) > self._capacity:
+        padded_key = encoded + (b' ' * (8 - (len(encoded) + 4) % 8))
+        if _isFloat(value):
+            real_value = struct.pack('i{0}s8sd'.format(len(padded_key)).encode(), len(encoded), encoded, b'f'+(b' ' * 7), 0.0)
+        else:
+            padded_value = [0 for i in range(5000)]
+            real_value = struct.pack('i{0}s8sd5000d'.format(len(padded_key)).encode(), len(encoded), encoded, b'l'+(b' ' * 7), 0, *padded_value)
+        while self._used + len(real_value) > self._capacity:
             self._capacity *= 2
             self._f.truncate(self._capacity)
             self._m = mmap.mmap(self._f.fileno(), self._capacity)
-        self._m[self._used:self._used + len(value)] = value
+        self._m[self._used:self._used + len(real_value)] = real_value
 
         # Update how much space we've used.
-        self._used += len(value)
+        self._used += len(real_value)
         struct.pack_into(b'i', self._m, 0, self._used)
-        self._positions[key] = self._used - 8
+        if _isFloat(value):
+            self._positions[key] = self._used - 8 - 8
+        else:
+            self._positions[key] = self._used - 8 - 8 - 5000*8
 
     def _read_all_values(self):
         """Yield (key, value, pos). No locking is performed."""
@@ -363,11 +378,23 @@ class _MmapedDict(object):
             encoded_len = struct.unpack_from(b'i', self._m, pos)[0]
             pos += 4
             encoded = struct.unpack_from('{0}s'.format(encoded_len).encode(), self._m, pos)[0]
-            padded_len = encoded_len + (8 - (encoded_len + 4) % 8)
-            pos += padded_len
-            value = struct.unpack_from(b'd', self._m, pos)[0]
-            yield encoded.decode('utf-8'), value, pos
+            padded_key_len = encoded_len + (8 - (encoded_len + 4) % 8)
+            pos += padded_key_len
+            value_type = struct.unpack_from(b's', self._m, pos)[0]
             pos += 8
+            if value_type == 'f':
+                value = struct.unpack_from(b'd', self._m, pos)[0]
+                yield encoded.decode('utf-8'), value, pos
+                pos += 8
+            elif value_type == 'l':
+                value_len = int(struct.unpack_from(b'd', self._m, pos)[0])
+                pos += 8
+                if value_len <= 0:
+                    value = ()
+                else:
+                    value = struct.unpack_from('{0}d'.format(int(value_len)).encode(), self._m, pos)
+                yield encoded.decode('utf-8'), value, pos
+                pos += 40000
 
     def read_all_values(self):
         """Yield (key, value, pos). No locking is performed."""
@@ -376,17 +403,44 @@ class _MmapedDict(object):
 
     def read_value(self, key):
         if key not in self._positions:
-            self._init_value(key)
+            return 0
         pos = self._positions[key]
-        # We assume that reading from an 8 byte aligned value is atomic
-        return struct.unpack_from(b'd', self._m, pos)[0]
+        value_type = struct.unpack_from(b's', self._m, pos)[0]
+        pos += 8
+        if value_type == 'f':
+            value = struct.unpack_from(b'd', self._m, pos)[0]
+        elif value_type == 'l':
+            value_len = struct.unpack_from(b'd', self._m, pos)[0]
+            pos += 8
+            value = struct.unpack_from('{0}d'.format(value_len).encode(), self._m, pos)
+        return value
 
     def write_value(self, key, value):
         if key not in self._positions:
-            self._init_value(key)
+            self._init_value(key, value)
         pos = self._positions[key]
-        # We assume that writing to an 8 byte aligned value is atomic
-        struct.pack_into(b'd', self._m, pos, value)
+        if _isFloat(value):
+            struct.pack_into(b'8sd', self._m, pos, b'f', float(value))
+        else:
+            length = len(value)
+            struct.pack_into(b'8sd{length}d'.format(length=length), self._m, pos, b'l', length, *value)
+
+    def clear_value(self):
+        pos = 8
+        while pos < self._used:
+            encoded_len = struct.unpack_from(b'i', self._m, pos)[0]
+            pos += 4
+            padded_key_len = encoded_len + (8 - (encoded_len + 4) % 8)
+            pos += padded_key_len
+            value_type = struct.unpack_from(b's', self._m, pos)[0]
+            pos += 8
+            if value_type == 'f':
+                struct.pack_into(b'd', self._m, pos, 0)
+                pos += 8
+            elif value_type == 'l':
+                padded_value = [0 for i in range(5000)]
+                struct.pack_into(b'd5000d', self._m, pos, 0, *padded_value)
+                pos += 40008
 
     def close(self):
         if self._f:
@@ -773,16 +827,20 @@ class Summary(object):
     def __init__(self, name, labelnames, labelvalues):
         self._count = _ValueClass(self._type, name, name + '_count', labelnames, labelvalues)
         self._sum = _ValueClass(self._type, name, name + '_sum', labelnames, labelvalues)
-        self._qt = Tdigest()
+        self._1Min_Sample = _ValueClass(self._type, name, name + '_1Min_Sample', labelnames, labelvalues)
+        self._1Min_Samples = []
 
     def observe(self, amount):
         '''Observe the given amount.'''
         self._count.inc(1)
         self._sum.inc(amount)
-        self._qt.push(amount)
+        self._1Min_Samples.append(amount)
+        self._1Min_Sample.set(copy.copy(self._1Min_Samples))
 
     def reset(self):
-        self._qt.reset()
+        # TODO:
+        self._1Min_Samples = []
+        self._1Min_Sample.set([])
         self._sum.set(0)
         self._count.set(0)
 
@@ -795,7 +853,7 @@ class Summary(object):
 
     def _samples(self):
         return (
-            ('_1Min_Sample', {}, self._qt.serialize()),
+            ('_1Min_Sample', {}, self._1Min_Sample.get()),
             ('_count', {}, self._count.get()),
             ('_sum', {}, self._sum.get()))
 
