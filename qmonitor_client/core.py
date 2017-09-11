@@ -269,10 +269,10 @@ class HistogramMetricFamily(Metric):
         if labels is not None and buckets is not None:
             raise ValueError('Can only specify at most one of buckets and labels.')
         if labels is None:
-          labels = []
+            labels = []
         self._labelnames = labels
         if buckets is not None:
-          self.add_metric([], buckets, sum_value)
+            self.add_metric([], buckets, sum_value)
 
     def add_metric(self, labels, buckets, sum_value):
         '''Add a metric to the metric family.
@@ -284,7 +284,7 @@ class HistogramMetricFamily(Metric):
           sum_value: The sum value of the metric.
         '''
         for bucket, value in buckets:
-          self.samples.append((self.name + '_bucket', dict(list(zip(self._labelnames, labels)) + [('le', bucket)]), value))
+            self.samples.append((self.name + '_bucket', dict(list(zip(self._labelnames, labels)) + [('le', bucket)]), value))
         # +Inf is last and provides the count value.
         self.samples.append((self.name + '_count', dict(zip(self._labelnames, labels)), buckets[-1][1]))
         self.samples.append((self.name + '_sum', dict(zip(self._labelnames, labels)), sum_value))
@@ -296,20 +296,26 @@ class _MutexValue(object):
     _multiprocess = False
 
     def __init__(self, typ, metric_name, name, labelnames, labelvalues, **kwargs):
-      self._value = 0.0
-      self._lock = Lock()
+        self._value = 0.0
+        self._lock = Lock()
 
     def inc(self, amount):
-      with self._lock:
-          self._value += amount
+        with self._lock:
+            self._value += amount
 
     def set(self, value):
-      with self._lock:
-          self._value = value
+        with self._lock:
+            self._value = value
 
     def get(self):
-      with self._lock:
-          return self._value
+        with self._lock:
+            if _isFloat(self._value):
+                return self._value
+            else:
+                qt = Tdigest()
+                for val in self._value:
+                    qt.push(val)
+                return qt.serialize()
 
 
 def _isFloat(value):
@@ -838,7 +844,6 @@ class Summary(object):
         self._1Min_Sample.set(copy.copy(self._1Min_Samples))
 
     def reset(self):
-        # TODO:
         self._1Min_Samples = []
         self._1Min_Sample.set([])
         self._sum.set(0)

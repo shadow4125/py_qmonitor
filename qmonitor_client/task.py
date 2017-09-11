@@ -31,15 +31,13 @@ class _RegularClear(threading.Thread):
                         if typ == 'summary':
                             d = core._MmapedDict(f)
                             d.clear_value()
-                else:
-                    # TODO:
-                    pass
-                #for name in self._registry._names_to_collectors:
-                #    collector = self._registry._names_to_collectors[name]
-                #    for metric in collector.collect():
-                #        if metric.type == 'summary':
-                #            collector.reset()
-                #            break
+
+                for collector in self._registry._collector_to_names:
+                    for metric in collector.collect():
+                        if metric.type == 'summary':
+                            collector.reset()
+                            break
+
             elif is_done and second < 55:
                 is_done = False
             time.sleep(1)
