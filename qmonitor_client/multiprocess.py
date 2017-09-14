@@ -103,7 +103,8 @@ class MultiProcessCollector(object):
 
 def mark_process_dead(pid, path=os.environ.get('qmonitor_multiproc_dir')):
     """Do bookkeeping for when one process dies in a multi-process setup."""
-    for f in glob.glob(os.path.join(path, 'gauge_livesum_{0}.db'.format(pid))):
-        os.remove(f)
-    for f in glob.glob(os.path.join(path, 'gauge_liveall_{0}.db'.format(pid))):
-        os.remove(f)
+    if path:
+        for f in glob.glob(os.path.join(path, 'gauge_livesum_{0}.db'.format(pid))):
+            os.remove(f)
+        for f in glob.glob(os.path.join(path, 'gauge_liveall_{0}.db'.format(pid))):
+            os.remove(f)
